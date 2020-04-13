@@ -58,7 +58,10 @@ MODEL_MAP = {
     'AWS::StepFunctions::StateMachine': sfn_models.StateMachine,
     'AWS::CloudFormation::Stack': service_models.CloudFormationStack,
     'AWS::SSM::Parameter': service_models.SSMParameter,
-    'AWS::Logs::LogGroup': service_models.LogsLogGroup
+    'AWS::Logs::LogGroup': service_models.LogsLogGroup,
+    'AWS::KinesisFirehose::DeliveryStream': service_models.FirehoseDeliveryStream,
+    'AWS::SecretsManager::Secret': service_models.SecretsManagerSecret,
+    'AWS::Elasticsearch::Domain': service_models.ElasticsearchDomain
 }
 
 
@@ -150,6 +153,15 @@ def update_physical_resource_id(resource):
 
         elif isinstance(resource, service_models.LogsLogGroup):
             resource.physical_resource_id = resource.params.get('LogGroupName')
+
+        elif isinstance(resource, service_models.FirehoseDeliveryStream):
+            resource.physical_resource_id = resource.params.get('DeliveryStreamName')
+
+        elif isinstance(resource, service_models.SecretsManagerSecret):
+            resource.physical_resource_id = resource.params.get('Name')
+
+        elif isinstance(resource, service_models.ElasticsearchDomain):
+            resource.physical_resource_id = resource.params.get('DomainName')
 
         else:
             LOG.warning('Unable to determine physical_resource_id for resource %s' % type(resource))
@@ -535,6 +547,23 @@ def apply_patches():
 
     IAM_Role_get_cfn_attribute_orig = iam_models.Role.get_cfn_attribute
     iam_models.Role.get_cfn_attribute = IAM_Role_get_cfn_attribute
+
+    # Patch IAM Role model
+    # https://github.com/localstack/localstack/issues/925
+    @property
+    def IAM_Role_physical_resource_id(self):
+        return self.name
+
+    iam_models.Role.physical_resource_id = IAM_Role_physical_resource_id
+
+    IAM_Role_create_from_cloudformation_json_orig = iam_models.Role.create_from_cloudformation_json
+
+    @classmethod
+    def IAM_Role_create_from_cloudformation_json(cls, resource_name, cloudformation_json, region_name):
+        resource_name = cloudformation_json['Properties']['RoleName']
+        return IAM_Role_create_from_cloudformation_json_orig(resource_name, cloudformation_json, region_name)
+
+    iam_models.Role.create_from_cloudformation_json = IAM_Role_create_from_cloudformation_json
 
     # Patch SNS Topic get_cfn_attribute(..) method in moto
     def SNS_Topic_get_cfn_attribute(self, attribute_name):

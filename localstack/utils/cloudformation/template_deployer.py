@@ -122,6 +122,12 @@ def sns_subscription_params(params, **kwargs):
     return result
 
 
+def es_add_tags_params(params, **kwargs):
+    es_arn = aws_stack.es_domain_arn(params.get('DomainName'))
+    tags = params.get('Tags', [])
+    return {'ARN': es_arn, 'TagList': tags}
+
+
 def s3_bucket_notification_config(params, **kwargs):
     notif_config = params.get('NotificationConfiguration')
     if not notif_config:
@@ -258,6 +264,49 @@ RESOURCE_TO_FUNCTION = {
                 'Name', 'Type', 'Value', 'Description', 'AllowedPattern', 'Policies', 'Tier'))
         }
     },
+    'SecretsManager::Secret': {
+        'create': {
+            'function': 'create_secret',
+            'parameters': select_parameters('Name', 'Description', 'SecretString', 'KmsKeyId', 'Tags')
+        },
+        'delete': {
+            'function': 'delete_secret',
+            'parameters': {
+                'SecretId': 'PhysicalResourceId'
+            }
+        }
+    },
+    'KinesisFirehose::DeliveryStream': {
+        'create': {
+            'function': 'create_delivery_stream',
+            'parameters': select_parameters('DeliveryStreamName', 'DeliveryStreamType',
+                'S3DestinationConfiguration', 'ElasticsearchDestinationConfiguration')
+        },
+        'delete': {
+            'function': 'delete_delivery_stream',
+            'parameters': {
+                'DeliveryStreamName': 'PhysicalResourceId'
+            }
+        }
+    },
+    'Elasticsearch::Domain': {
+        'create': [{
+            'function': 'create_elasticsearch_domain',
+            'parameters': select_parameters('AccessPolicies', 'AdvancedOptions', 'CognitoOptions',
+                'DomainName', 'EBSOptions', 'ElasticsearchClusterConfig', 'ElasticsearchVersion',
+                'EncryptionAtRestOptions', 'LogPublishingOptions', 'NodeToNodeEncryptionOptions',
+                'SnapshotOptions', 'VPCOptions')
+        }, {
+            'function': 'add_tags',
+            'parameters': es_add_tags_params
+        }],
+        'delete': {
+            'function': 'delete_elasticsearch_domain',
+            'parameters': {
+                'DomainName': 'PhysicalResourceId'
+            }
+        }
+    },
     'Logs::LogGroup': {
         'create': {
             'function': 'create_log_group',
@@ -365,7 +414,13 @@ RESOURCE_TO_FUNCTION = {
                         select_parameters('Path', 'RoleName', 'AssumeRolePolicyDocument',
                             'Description', 'MaxSessionDuration', 'PermissionsBoundary', 'Tags'),
                         'AssumeRolePolicyDocument'),
-                    {'RoleName': PLACEHOLDER_RESOURCE_NAME})
+                    {'RoleName': 'RoleName'})
+        },
+        'delete': {
+            'function': 'delete_role',
+            'parameters': {
+                'RoleName': 'PhysicalResourceId'
+            }
         }
     },
     'ApiGateway::RestApi': {
@@ -538,6 +593,10 @@ def get_service_name(resource):
         return 'cognito-idp'
     if parts[-2] == 'Cognito':
         return 'cognito-idp'
+    if parts[-2] == 'Elasticsearch':
+        return 'es'
+    if parts[-2] == 'KinesisFirehose':
+        return 'firehose'
     return parts[1].lower()
 
 
@@ -746,6 +805,18 @@ def retrieve_resource_details(resource_id, resource_status, resources, stack_nam
             if not result:
                 return None
             return result[0]
+        elif resource_type == 'SecretsManager::Secret':
+            secret_name = resource_props.get('Name') or resource_id
+            secret_name = resolve_refs_recursively(stack_name, secret_name, resources)
+            return aws_stack.connect_to_service('secretsmanager').describe_secret(SecretId=secret_name)
+        elif resource_type == 'Elasticsearch::Domain':
+            domain_name = resource_props.get('DomainName') or resource_id
+            domain_name = resolve_refs_recursively(stack_name, domain_name, resources)
+            return aws_stack.connect_to_service('es').describe_elasticsearch_domain(DomainName=domain_name)
+        elif resource_type == 'KinesisFirehose::DeliveryStream':
+            stream_name = resource_props.get('DeliveryStreamName') or resource_id
+            stream_name = resolve_refs_recursively(stack_name, stream_name, resources)
+            return aws_stack.connect_to_service('firehose').describe_delivery_stream(DeliveryStreamName=stream_name)
         if is_deployable_resource(resource):
             LOG.warning('Unexpected resource type %s when resolving references of resource %s: %s' %
                         (resource_type, resource_id, resource))
